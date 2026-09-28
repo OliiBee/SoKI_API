@@ -1,6 +1,6 @@
 name: Test CompanyGPT API Connection
 
-on:
+"on":
   workflow_dispatch:   # Nur manuell auslösbar – kein automatischer Trigger
 
 jobs:

@@ -1,102 +1,126 @@
-# ==============================================================================
-# Zweck:        Automatisches Parsen von TwinCAT-Projektdateien und Upload
-#               in die CompanyGPT Knowledge Base (KB-Agent-TwinCAT)
-# Autor:        Auto-generiert · CompanyGPT DevOps Agent
-# Datum:        2026-09-25
-# Abhängigkeiten:
-#   - GitHub Secret:   COMPANYGPT_API_KEY
-#   - GitHub Variable: COMPANYGPT_API_URL
-#   - Script:          scripts/parse_twincat.py
-# ==============================================================================
+name: Update TwinCAT KB in CompanyGPT
 
-name: 🔷 TwinCAT KB Update
-
-on:
+"on":
   push:
     branches:
       - main
     paths:
-      - "**/*.tsproj"
-      - "**/*.TcPOU"
-      - "**/*.TcGVL"
-      - "**/*.TcDUT"
-      - "**/*.tmc"
-      - "**/*.TcIO"
-      - ".github/workflows/twincat_kb_update.yml"
-      - "scripts/parse_twincat.py"
+      - '**.TcPOU'
+      - '**.TcDUT'
+      - '**.TcGVL'
+      - '**.TcTask'
+      - '**.tsproj'
+      - 'parse_twincat.py'
 
-  # Manueller Start per Knopfdruck im GitHub UI (Actions-Tab → Run workflow)
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: "Grund für den manuellen Start (optional)"
-        required: false
-        default: "Manueller Trigger"
-
-# Nur ein paralleler Run – laufender wird abgebrochen wenn neuer startet
-concurrency:
-  group: twincat-kb-update-${{ github.ref }}
-  cancel-in-progress: true
-
-permissions:
-  contents: read
+  workflow_dispatch:  # Manueller Start jederzeit möglich
 
 jobs:
-  update-twincat-kb:
-    name: "TwinCAT Knowledge Base aktualisieren"
+  parse-and-upload:
+    name: Parse TwinCAT & Upload to CompanyGPT KB
     runs-on: ubuntu-latest
-    timeout-minutes: 10
 
     steps:
-
-      - name: "📥 Repository auschecken"
+      # ── 1. Repo auschecken ──────────────────────────────────────────────
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: "🐍 Python 3.11 einrichten"
+      # ── 2. Python einrichten ────────────────────────────────────────────
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: "📦 Abhängigkeiten installieren"
+      - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install requests
+          pip install requests lxml
 
-      - name: "⚙️ TwinCAT Parser ausführen"
-        id: run_parser
+      # ── 3. TwinCAT-Dateien parsen ───────────────────────────────────────
+      - name: Parse TwinCAT project files
+        run: |
+          python parse_twincat.py \
+            --categories tasks,dut,gvl,libs,motion,pous \
+            --output twincat_kb_payload.json
+        env:
+          REPO_ROOT: ${{ github.workspace }}
+
+      # ── 4. Payload prüfen (Debug-Ausgabe ohne Secrets) ─────────────────
+      - name: Show parsed summary
+        run: |
+          echo "=== TwinCAT KB Payload Summary ==="
+          python3 -c "
+          import json, sys
+          with open('twincat_kb_payload.json') as f:
+              data = json.load(f)
+          print(f'Kategorien: {list(data.keys())}')
+          for k, v in data.items():
+              items = v if isinstance(v, list) else []
+              print(f'  {k}: {len(items)} Einträge')
+          "
+
+      # ── 5. Upload zu CompanyGPT KB ──────────────────────────────────────
+      - name: Upload KB to CompanyGPT
+        run: |
+          python3 - <<'EOF'
+          import json, requests, os, sys
+
+          api_key   = os.environ["COMPANYGPT_API_KEY"]
+          api_url   = os.environ.get("COMPANYGPT_API_URL", "https://api.companygpt.de/v1")
+          kb_folder = "KB-Agent-TwinCAT"
+
+          with open("twincat_kb_payload.json") as f:
+              payload = json.load(f)
+
+          headers = {
+              "Authorization": f"Bearer {api_key}",
+              "Content-Type": "application/json",
+              "X-Source": "github-actions",
+          }
+
+          success = 0
+          errors  = 0
+
+          for category, content in payload.items():
+              doc_id   = f"twincat_{category.lower()}"
+              doc_body = {
+                  "folder":   kb_folder,
+                  "id":       doc_id,
+                  "title":    f"TwinCAT – {category.upper()}",
+                  "content":  json.dumps(content, ensure_ascii=False, indent=2),
+                  "tags":     ["twincat", "auto-generated", category.lower()],
+                  "source":   f"github/{os.environ.get('GITHUB_REPOSITORY', 'SoKI_API')}",
+                  "commit":   os.environ.get("GITHUB_SHA", "unknown")[:8],
+              }
+
+              resp = requests.put(
+                  f"{api_url}/documents/{doc_id}",
+                  headers=headers,
+                  json=doc_body,
+                  timeout=30,
+              )
+
+              if resp.status_code in (200, 201):
+                  print(f"  ✅ {category}: OK ({resp.status_code})")
+                  success += 1
+              else:
+                  print(f"  ❌ {category}: FEHLER {resp.status_code} – {resp.text[:200]}")
+                  errors += 1
+
+          print(f"\nErgebnis: {success} erfolgreich / {errors} Fehler")
+          sys.exit(1 if errors > 0 else 0)
+          EOF
         env:
           COMPANYGPT_API_KEY: ${{ secrets.COMPANYGPT_API_KEY }}
           COMPANYGPT_API_URL: ${{ vars.COMPANYGPT_API_URL }}
-        run: |
-          echo "Branch  : ${{ github.ref_name }}"
-          echo "Commit  : ${{ github.sha }}"
-          echo "Trigger : ${{ github.event_name }}"
-          python scripts/parse_twincat.py
+          GITHUB_SHA:         ${{ github.sha }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
 
-      - name: "✅ Erfolg melden"
-        if: success()
-        run: |
-          {
-            echo "## ✅ TwinCAT KB Update – Erfolgreich"
-            echo "| Feld | Wert |"
-            echo "|------|------|"
-            echo "| Branch | \`${{ github.ref_name }}\` |"
-            echo "| Commit | \`${{ github.sha }}\` |"
-            echo "| Ausgelöst von | \`${{ github.actor }}\` |"
-            echo "| Zeitpunkt | $(date -u '+%Y-%m-%d %H:%M UTC') |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: "❌ Fehler melden"
-        if: failure()
-        run: |
-          {
-            echo "## ❌ TwinCAT KB Update – Fehlgeschlagen"
-            echo "| Ursache | Maßnahme |"
-            echo "|---------|----------|"
-            echo "| COMPANYGPT_API_KEY fehlt/ungültig | Repo Settings → Secrets prüfen |"
-            echo "| COMPANYGPT_API_URL nicht gesetzt | Repo Settings → Variables prüfen |"
-            echo "| Keine TwinCAT-Dateien gefunden | Repo-Struktur prüfen |"
-            echo "| Script-Fehler | Log des Steps 'TwinCAT Parser ausführen' prüfen |"
-          } >> "$GITHUB_STEP_SUMMARY"
+      # ── 6. Payload als Artefakt sichern (7 Tage) ───────────────────────
+      - name: Save payload as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twincat-kb-payload-${{ github.run_number }}
+          path: twincat_kb_payload.json
+          retention-days: 7
