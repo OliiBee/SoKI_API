@@ -98,4 +98,4 @@ jobs:
           echo "  CompanyGPT API Connection Test"
           echo "  Host: $API_URL"
           echo "  Run:  #${{ github.run_number }}"
-          echo "════════════════════════════════════════"
+          echo "════════════════════════════════════════" 
