@@ -12,7 +12,7 @@ name: Update TwinCAT KB in CompanyGPT
       - '**.tsproj'
       - 'parse_twincat.py'
 
-  workflow_dispatch:  # Manueller Start jederzeit möglich
+  workflow_dispatch:
 
 jobs:
   parse-and-upload:
@@ -33,8 +33,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install requests lxml
+        run: pip install requests lxml
 
       # ── 3. TwinCAT-Dateien parsen ───────────────────────────────────────
       - name: Parse TwinCAT project files
@@ -45,37 +44,43 @@ jobs:
         env:
           REPO_ROOT: ${{ github.workspace }}
 
-      # ── 4. Payload prüfen (Debug-Ausgabe ohne Secrets) ─────────────────
+      # ── 4. Payload prüfen ───────────────────────────────────────────────
       - name: Show parsed summary
         run: |
           echo "=== TwinCAT KB Payload Summary ==="
           python3 -c "
-          import json, sys
+          import json
           with open('twincat_kb_payload.json') as f:
               data = json.load(f)
           print(f'Kategorien: {list(data.keys())}')
           for k, v in data.items():
               items = v if isinstance(v, list) else []
-              print(f'  {k}: {len(items)} Einträge')
+              print(f'  {k}: {len(items)} Eintraege')
           "
 
-      # ── 5. Upload zu CompanyGPT KB ──────────────────────────────────────
+      # ── 5. Upload zu CompanyGPT KB (Azure Cognitive Services) ───────────
       - name: Upload KB to CompanyGPT
         run: |
           python3 - <<'EOF'
           import json, requests, os, sys
 
           api_key   = os.environ["COMPANYGPT_API_KEY"]
-          api_url   = os.environ.get("COMPANYGPT_API_URL", "https://api.companygpt.de/v1")
+          # Strip trailing slash
+          api_url   = os.environ.get("COMPANYGPT_API_URL", "").rstrip("/")
           kb_folder = "KB-Agent-TwinCAT"
+
+          if not api_url:
+              print("❌ COMPANYGPT_API_URL ist nicht gesetzt!")
+              sys.exit(1)
 
           with open("twincat_kb_payload.json") as f:
               payload = json.load(f)
 
+          # Azure Cognitive Services: api-key Header (kein Bearer!)
           headers = {
-              "Authorization": f"Bearer {api_key}",
-              "Content-Type": "application/json",
-              "X-Source": "github-actions",
+              "api-key":        api_key,
+              "Content-Type":   "application/json",
+              "X-Source":       "github-actions",
           }
 
           success = 0
@@ -86,37 +91,38 @@ jobs:
               doc_body = {
                   "folder":   kb_folder,
                   "id":       doc_id,
-                  "title":    f"TwinCAT – {category.upper()}",
+                  "title":    f"TwinCAT - {category.upper()}",
                   "content":  json.dumps(content, ensure_ascii=False, indent=2),
                   "tags":     ["twincat", "auto-generated", category.lower()],
                   "source":   f"github/{os.environ.get('GITHUB_REPOSITORY', 'SoKI_API')}",
                   "commit":   os.environ.get("GITHUB_SHA", "unknown")[:8],
               }
 
-              resp = requests.put(
-                  f"{api_url}/documents/{doc_id}",
-                  headers=headers,
-                  json=doc_body,
-                  timeout=30,
-              )
+              url = f"{api_url}/documents/{doc_id}"
+              print(f"  → PUT {url}")
 
-              if resp.status_code in (200, 201):
-                  print(f"  ✅ {category}: OK ({resp.status_code})")
-                  success += 1
-              else:
-                  print(f"  ❌ {category}: FEHLER {resp.status_code} – {resp.text[:200]}")
+              try:
+                  resp = requests.put(url, headers=headers, json=doc_body, timeout=30)
+                  if resp.status_code in (200, 201):
+                      print(f"  ✅ {category}: OK ({resp.status_code})")
+                      success += 1
+                  else:
+                      print(f"  ❌ {category}: FEHLER {resp.status_code} – {resp.text[:300]}")
+                      errors += 1
+              except Exception as e:
+                  print(f"  ❌ {category}: Exception – {e}")
                   errors += 1
 
           print(f"\nErgebnis: {success} erfolgreich / {errors} Fehler")
           sys.exit(1 if errors > 0 else 0)
           EOF
         env:
-          COMPANYGPT_API_KEY: ${{ secrets.COMPANYGPT_API_KEY }}
-          COMPANYGPT_API_URL: ${{ vars.COMPANYGPT_API_URL }}
-          GITHUB_SHA:         ${{ github.sha }}
-          GITHUB_REPOSITORY:  ${{ github.repository }}
+          COMPANYGPT_API_KEY:  ${{ secrets.COMPANYGPT_API_KEY }}
+          COMPANYGPT_API_URL:  ${{ vars.COMPANYGPT_API_URL }}
+          GITHUB_SHA:          ${{ github.sha }}
+          GITHUB_REPOSITORY:   ${{ github.repository }}
 
-      # ── 6. Payload als Artefakt sichern (7 Tage) ───────────────────────
+      # ── 6. Payload als Artefakt sichern ─────────────────────────────────
       - name: Save payload as artifact
         if: always()
         uses: actions/upload-artifact@v4
