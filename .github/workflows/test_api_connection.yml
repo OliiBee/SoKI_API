@@ -12,14 +12,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 1. Reachability – Base-URL ohne Slash-Problem ───────────────────
-      - name: Check API reachability (HEAD)
+      # ── 1. Reachability ─────────────────────────────────────────────────
+      - name: Check API reachability
         run: |
           echo "=== Step 1: Reachability ==="
-          # Strip trailing slash
           API_URL="${{ vars.COMPANYGPT_API_URL }}"
           API_URL="${API_URL%/}"
-          echo "Calling: $API_URL"
+          echo "Host: $API_URL"
 
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time 10 \
@@ -33,58 +32,56 @@ jobs:
             echo "✅ Host erreichbar (HTTP $HTTP_CODE)"
           fi
 
-      # ── 2. Auth-Test – Azure Cognitive Services verwendet api-key ───────
-      - name: Test authentication (Azure api-key)
+      # ── 2. Auth-Test mit Bearer Token ───────────────────────────────────
+      - name: Test authentication (Bearer)
         run: |
           echo "=== Step 2: Auth Test ==="
           API_URL="${{ vars.COMPANYGPT_API_URL }}"
           API_URL="${API_URL%/}"
 
-          # Azure Cognitive Services: api-key Header statt Bearer
           RESPONSE=$(curl -s -o response.json -w "%{http_code}" \
             --max-time 10 \
-            -H "api-key: ${{ secrets.COMPANYGPT_API_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.COMPANYGPT_API_KEY }}" \
             -H "Content-Type: application/json" \
-            "$API_URL/openai/deployments?api-version=2024-02-01")
+            "$API_URL/models")
 
           echo "HTTP Status: $RESPONSE"
           echo "Response Body:"
           cat response.json | python3 -m json.tool 2>/dev/null || cat response.json
 
           if [ "$RESPONSE" = "200" ]; then
-            echo "✅ Authentifizierung erfolgreich (api-key)"
+            echo "✅ Authentifizierung erfolgreich"
           elif [ "$RESPONSE" = "401" ]; then
             echo "❌ 401 – API-Key ungültig"
             exit 1
           elif [ "$RESPONSE" = "403" ]; then
             echo "❌ 403 – Keine Berechtigung"
             exit 1
-          elif [ "$RESPONSE" = "404" ]; then
-            echo "⚠️  404 – Endpunkt nicht gefunden, versuche Fallback..."
           else
             echo "⚠️  Status: $RESPONSE"
+            exit 1
           fi
 
-      # ── 3. Fallback – Bearer Token testen ───────────────────────────────
-      - name: Test authentication (Bearer fallback)
+      # ── 3. Files-Endpunkt prüfen ─────────────────────────────────────
+      - name: Test /files endpoint
         run: |
-          echo "=== Step 3: Bearer Fallback ==="
+          echo "=== Step 3: /files Endpoint ==="
           API_URL="${{ vars.COMPANYGPT_API_URL }}"
           API_URL="${API_URL%/}"
 
-          RESPONSE=$(curl -s -o bearer_response.json -w "%{http_code}" \
-            --max-time 10 \
+          RESPONSE=$(curl -s -o files.json -w "%{http_code}" \
+            --max-time 15 \
             -H "Authorization: Bearer ${{ secrets.COMPANYGPT_API_KEY }}" \
             -H "Content-Type: application/json" \
-            "$API_URL/openai/deployments?api-version=2024-02-01")
+            "$API_URL/files")
 
           echo "HTTP Status: $RESPONSE"
-          cat bearer_response.json | python3 -m json.tool 2>/dev/null || cat bearer_response.json
+          cat files.json | python3 -m json.tool 2>/dev/null || cat files.json
 
           if [ "$RESPONSE" = "200" ]; then
-            echo "✅ Bearer Auth erfolgreich"
+            echo "✅ /files erreichbar"
           else
-            echo "ℹ️  Bearer Status: $RESPONSE"
+            echo "⚠️  /files Status: $RESPONSE – evtl. anderer Endpunkt nötig"
           fi
 
       # ── 4. Zusammenfassung ──────────────────────────────────────────────
@@ -95,7 +92,4 @@ jobs:
           API_URL="${API_URL%/}"
           echo ""
           echo "════════════════════════════════════════"
-          echo "  CompanyGPT API Connection Test"
-          echo "  Host: $API_URL"
-          echo "  Run:  #${{ github.run_number }}"
-          echo "════════════════════════════════════════" 
+          echo 
