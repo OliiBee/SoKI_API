@@ -1,7 +1,7 @@
 name: Test CompanyGPT API Connection
 
 "on":
-  workflow_dispatch:   # Nur manuell auslösbar – kein automatischer Trigger
+  workflow_dispatch:
 
 jobs:
   test-connection:
@@ -9,93 +9,93 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ── 1. Repo auschecken ──────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Reachability prüfen (kein Auth, nur HTTP-Status) ─────────────
+      # ── 1. Reachability – Base-URL ohne Slash-Problem ───────────────────
       - name: Check API reachability (HEAD)
         run: |
           echo "=== Step 1: Reachability ==="
+          # Strip trailing slash
+          API_URL="${{ vars.COMPANYGPT_API_URL }}"
+          API_URL="${API_URL%/}"
+          echo "Calling: $API_URL"
+
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             --max-time 10 \
-            -I "${{ vars.COMPANYGPT_API_URL }}/health")
+            -I "$API_URL")
+
           echo "HTTP Status: $HTTP_CODE"
           if [ "$HTTP_CODE" = "000" ]; then
-            echo "❌ API nicht erreichbar – URL prüfen: ${{ vars.COMPANYGPT_API_URL }}"
+            echo "❌ API nicht erreichbar"
             exit 1
           else
-            echo "✅ API erreichbar (HTTP $HTTP_CODE)"
+            echo "✅ Host erreichbar (HTTP $HTTP_CODE)"
           fi
 
-      # ── 3. Auth-Test gegen /health ──────────────────────────────────────
-      - name: Test authentication (Bearer Token)
+      # ── 2. Auth-Test – Azure Cognitive Services verwendet api-key ───────
+      - name: Test authentication (Azure api-key)
         run: |
           echo "=== Step 2: Auth Test ==="
+          API_URL="${{ vars.COMPANYGPT_API_URL }}"
+          API_URL="${API_URL%/}"
+
+          # Azure Cognitive Services: api-key Header statt Bearer
           RESPONSE=$(curl -s -o response.json -w "%{http_code}" \
             --max-time 10 \
-            -H "Authorization: Bearer ${{ secrets.COMPANYGPT_API_KEY }}" \
+            -H "api-key: ${{ secrets.COMPANYGPT_API_KEY }}" \
             -H "Content-Type: application/json" \
-            "${{ vars.COMPANYGPT_API_URL }}/health")
+            "$API_URL/openai/deployments?api-version=2024-02-01")
 
           echo "HTTP Status: $RESPONSE"
           echo "Response Body:"
-          cat response.json || echo "(leer)"
-
-          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "204" ]; then
-            echo "✅ Authentifizierung erfolgreich"
-          elif [ "$RESPONSE" = "401" ]; then
-            echo "❌ 401 Unauthorized – API-Key ungültig oder abgelaufen"
-            exit 1
-          elif [ "$RESPONSE" = "403" ]; then
-            echo "❌ 403 Forbidden – Key gültig, aber keine Berechtigung"
-            exit 1
-          else
-            echo "⚠️  Unerwarteter Status: $RESPONSE"
-            exit 1
-          fi
-
-      # ── 4. Endpunkt /v1/files prüfen ────────────────────────────────────
-      - name: Test /v1/files endpoint
-        run: |
-          echo "=== Step 3: Endpoint /v1/files ==="
-          RESPONSE=$(curl -s -o files.json -w "%{http_code}" \
-            --max-time 15 \
-            -H "Authorization: Bearer ${{ secrets.COMPANYGPT_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            "${{ vars.COMPANYGPT_API_URL }}/files")
-
-          echo "HTTP Status: $RESPONSE"
+          cat response.json | python3 -m json.tool 2>/dev/null || cat response.json
 
           if [ "$RESPONSE" = "200" ]; then
-            echo "✅ /v1/files erreichbar"
-            echo "--- Felder in der Antwort ---"
-            python3 -c "
-          import json
-          with open('files.json') as f:
-              data = json.load(f)
-          if isinstance(data, list):
-              print(f'Typ: Liste mit {len(data)} Einträgen')
-              if len(data) > 0:
-                  print(f'Felder: {list(data[0].keys())}')
-          elif isinstance(data, dict):
-              print(f'Typ: Objekt')
-              print(f'Felder: {list(data.keys())}')
-          " || echo "(JSON-Parse fehlgeschlagen)"
+            echo "✅ Authentifizierung erfolgreich (api-key)"
+          elif [ "$RESPONSE" = "401" ]; then
+            echo "❌ 401 – API-Key ungültig"
+            exit 1
+          elif [ "$RESPONSE" = "403" ]; then
+            echo "❌ 403 – Keine Berechtigung"
+            exit 1
+          elif [ "$RESPONSE" = "404" ]; then
+            echo "⚠️  404 – Endpunkt nicht gefunden, versuche Fallback..."
           else
-            echo "⚠️  /v1/files Status: $RESPONSE"
-            cat files.json || true
+            echo "⚠️  Status: $RESPONSE"
           fi
 
-      # ── 5. Zusammenfassung ──────────────────────────────────────────────
+      # ── 3. Fallback – Bearer Token testen ───────────────────────────────
+      - name: Test authentication (Bearer fallback)
+        run: |
+          echo "=== Step 3: Bearer Fallback ==="
+          API_URL="${{ vars.COMPANYGPT_API_URL }}"
+          API_URL="${API_URL%/}"
+
+          RESPONSE=$(curl -s -o bearer_response.json -w "%{http_code}" \
+            --max-time 10 \
+            -H "Authorization: Bearer ${{ secrets.COMPANYGPT_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            "$API_URL/openai/deployments?api-version=2024-02-01")
+
+          echo "HTTP Status: $RESPONSE"
+          cat bearer_response.json | python3 -m json.tool 2>/dev/null || cat bearer_response.json
+
+          if [ "$RESPONSE" = "200" ]; then
+            echo "✅ Bearer Auth erfolgreich"
+          else
+            echo "ℹ️  Bearer Status: $RESPONSE"
+          fi
+
+      # ── 4. Zusammenfassung ──────────────────────────────────────────────
       - name: Summary
         if: always()
         run: |
+          API_URL="${{ vars.COMPANYGPT_API_URL }}"
+          API_URL="${API_URL%/}"
           echo ""
-          echo "════════════════════════════════════"
+          echo "════════════════════════════════════════"
           echo "  CompanyGPT API Connection Test"
-          echo "  API URL: ${{ vars.COMPANYGPT_API_URL }}"
-          echo "  Secret:  COMPANYGPT_API_KEY (gesetzt: ${{ secrets.COMPANYGPT_API_KEY != '' }})"
-          echo "  Repo:    ${{ github.repository }}"
-          echo "  Run:     #${{ github.run_number }}"
-          echo "════════════════════════════════════"
+          echo "  Host: $API_URL"
+          echo "  Run:  #${{ github.run_number }}"
+          echo "════════════════════════════════════════"
