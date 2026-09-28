@@ -1,0 +1,102 @@
+# ==============================================================================
+# Zweck:        Automatisches Parsen von TwinCAT-Projektdateien und Upload
+#               in die CompanyGPT Knowledge Base (KB-Agent-TwinCAT)
+# Autor:        Auto-generiert · CompanyGPT DevOps Agent
+# Datum:        2026-09-25
+# Abhängigkeiten:
+#   - GitHub Secret:   COMPANYGPT_API_KEY
+#   - GitHub Variable: COMPANYGPT_API_URL
+#   - Script:          scripts/parse_twincat.py
+# ==============================================================================
+
+name: 🔷 TwinCAT KB Update
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.tsproj"
+      - "**/*.TcPOU"
+      - "**/*.TcGVL"
+      - "**/*.TcDUT"
+      - "**/*.tmc"
+      - "**/*.TcIO"
+      - ".github/workflows/twincat_kb_update.yml"
+      - "scripts/parse_twincat.py"
+
+  # Manueller Start per Knopfdruck im GitHub UI (Actions-Tab → Run workflow)
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Grund für den manuellen Start (optional)"
+        required: false
+        default: "Manueller Trigger"
+
+# Nur ein paralleler Run – laufender wird abgebrochen wenn neuer startet
+concurrency:
+  group: twincat-kb-update-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  update-twincat-kb:
+    name: "TwinCAT Knowledge Base aktualisieren"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+
+      - name: "📥 Repository auschecken"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "🐍 Python 3.11 einrichten"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "📦 Abhängigkeiten installieren"
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: "⚙️ TwinCAT Parser ausführen"
+        id: run_parser
+        env:
+          COMPANYGPT_API_KEY: ${{ secrets.COMPANYGPT_API_KEY }}
+          COMPANYGPT_API_URL: ${{ vars.COMPANYGPT_API_URL }}
+        run: |
+          echo "Branch  : ${{ github.ref_name }}"
+          echo "Commit  : ${{ github.sha }}"
+          echo "Trigger : ${{ github.event_name }}"
+          python scripts/parse_twincat.py
+
+      - name: "✅ Erfolg melden"
+        if: success()
+        run: |
+          {
+            echo "## ✅ TwinCAT KB Update – Erfolgreich"
+            echo "| Feld | Wert |"
+            echo "|------|------|"
+            echo "| Branch | \`${{ github.ref_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Ausgelöst von | \`${{ github.actor }}\` |"
+            echo "| Zeitpunkt | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "❌ Fehler melden"
+        if: failure()
+        run: |
+          {
+            echo "## ❌ TwinCAT KB Update – Fehlgeschlagen"
+            echo "| Ursache | Maßnahme |"
+            echo "|---------|----------|"
+            echo "| COMPANYGPT_API_KEY fehlt/ungültig | Repo Settings → Secrets prüfen |"
+            echo "| COMPANYGPT_API_URL nicht gesetzt | Repo Settings → Variables prüfen |"
+            echo "| Keine TwinCAT-Dateien gefunden | Repo-Struktur prüfen |"
+            echo "| Script-Fehler | Log des Steps 'TwinCAT Parser ausführen' prüfen |"
+          } >> "$GITHUB_STEP_SUMMARY"
